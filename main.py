@@ -55,6 +55,7 @@ def process_add_recipe(url: str) -> str:
     import json
     data = json.loads(response.choices[0].message.content)
     title = data.get("title", "").strip() or "不明なレシピ"
+    ingredients_raw = data.get("ingredients", [])
     if isinstance(ingredients_raw, list):
         ingredients = ", ".join(ingredients_raw)
     else:
