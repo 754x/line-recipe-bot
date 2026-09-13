@@ -18,18 +18,18 @@ from tavily import TavilyClient
 app = FastAPI()
 
 # 環境変数の読み込み
-LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "")
-LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "").strip()
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "").strip()
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
 
 # クライアント初期化
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
+openai_client = OpenAI(api_key=OPENAI_API_KEY, timeout=30.0, max_retries=3)
 tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
 
 # DBヘルパー関数
@@ -48,14 +48,17 @@ def process_add_recipe(url: str) -> str:
     
     prompt = f"以下のWebページから『料理タイトル』と『主な食材・調味料』を抽出し、JSON形式で返してください。\n内容:\n{raw_content[:2000]}"
     response = openai_client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5-nano",
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"}
     )
     import json
     data = json.loads(response.choices[0].message.content)
-    title = data.get("title", "不明なレシピ")
-    ingredients = ", ".join(data.get("ingredients", [])) if isinstance(data.get("ingredients"), list) else str(data.get("ingredients", ""))
+    title = data.get("title", "").strip() or "不明なレシピ"
+    if isinstance(ingredients_raw, list):
+        ingredients = ", ".join(ingredients_raw)
+    else:
+        ingredients = str(ingredients_raw)
     
     save_recipe_to_db(title, url, ingredients)
     return f"【レシピを保存しました！】\n📖 {title}\n🔗 {url}"
@@ -69,7 +72,7 @@ def process_search_recipes(user_query: str) -> str:
     
     prompt = f"お気に入り傾向:\n{fav_text}\n\n検索結果:\n{results_text}\n\nユーザー指定条件: {user_query}\n\n上記を元にお気に入りの傾向を踏まえたおすすめレシピを簡潔に提案してください。"
     response = openai_client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5-nano",
         messages=[{"role": "user", "content": prompt}]
     )
     return response.choices[0].message.content
