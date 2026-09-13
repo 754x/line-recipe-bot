@@ -43,26 +43,88 @@ def get_all_recipes_from_db():
 
 # 処理ロジック
 def process_add_recipe(url: str) -> str:
-    search_res = tavily_client.extract(urls=[url])
-    raw_content = search_res['results'][0]['raw_content'] if search_res['results'] else ""
+    raw_content = ""
     
-    prompt = f"以下のWebページから『料理タイトル』と『主な食材・調味料』を抽出し、JSON形式で返してください。\n内容:\n{raw_content[:2000]}"
-    response = openai_client.chat.completions.create(
-        model="gpt-5-nano",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"}
-    )
-    import json
-    data = json.loads(response.choices[0].message.content)
-    title = data.get("title", "").strip() or "不明なレシピ"
-    ingredients_raw = data.get("ingredients", [])
-    if isinstance(ingredients_raw, list):
-        ingredients = ", ".join(ingredients_raw)
-    else:
-        ingredients = str(ingredients_raw)
-    
+    # --- Step 1: Tavily で抽出試行 ---
+    try:
+        search_res = tavily_client.extract(urls=[url])
+        results = search_res.get('results', [])
+        if results and results[0].get('raw_content'):
+            raw_content = results[0].get('raw_content', '')
+            print(f"[DEBUG] Tavily Extract succeeded. Length: {len(raw_content)}")
+    except Exception as e:
+        print(f"[DEBUG] Tavily Extract Error: {e}")
+
+    # --- Step 2: Tavily で取得できなかった場合のフォールバック（HTML取得） ---
+    if not raw_content or len(raw_content.strip()) < 50:
+        print("[DEBUG] Falling back to standard HTTP request...")
+        try:
+            req = urllib.request.Request(
+                url, 
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            )
+            with urllib.request.urlopen(req, timeout=10) as res:
+                html = res.read().decode('utf-8', errors='ignore')
+                soup = BeautifulSoup(html, 'html.parser')
+                for script in soup(["script", "style"]):
+                    script.decompose()
+                raw_content = soup.get_text(separator=' ', strip=True)
+                print(f"[DEBUG] Fallback HTTP succeeded. Length: {len(raw_content)}")
+        except Exception as e:
+            print(f"[DEBUG] Fallback HTTP Error: {e}")
+
+    # 本文が全く取得できなかった場合は保存せずに中断
+    if not raw_content or len(raw_content.strip()) < 20:
+        print(f"[WARN] Failed to fetch content from URL: {url}. Skipping DB save.")
+        return f"⚠️ ページの本文を取得できなかったため、保存をスキップしました。\n🔗 {url}"
+
+    # --- Step 3: OpenAI で解析 ---
+    prompt = f"""
+以下のWebページの内容から『料理名(title)』と『使用されている主な食材・調味料(ingredients)』を抽出して、指定のJSON形式で返してください。
+
+【出力フォーマット】
+{{
+  "title": "料理名",
+  "ingredients": ["食材1", "食材2", "調味料1"]
+}}
+
+【Webページ内容】
+{raw_content[:4000]}
+"""
+
+    title = ""
+    ingredients = ""
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-5-nano",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        res_text = response.choices[0].message.content
+        print(f"[DEBUG] OpenAI Raw Response: {res_text}")
+        
+        data = json.loads(res_text)
+        title = str(data.get("title", "")).strip()
+        
+        ingredients_raw = data.get("ingredients", [])
+        if isinstance(ingredients_raw, list):
+            ingredients = ", ".join([str(x).strip() for x in ingredients_raw if str(x).strip()])
+        else:
+            ingredients = str(ingredients_raw).strip()
+            
+    except Exception as e:
+        print(f"[ERROR] OpenAI / JSON Parsing Failed: {e}")
+
+    # --- Step 4: バリデーション（取得失敗時は DB 保存しない） ---
+    if not title or title in ["不明なレシピ", "取得失敗レシピ", "解析エラーレシピ"] or not ingredients:
+        print(f"[WARN] Incomplete recipe data (title: '{title}', ingredients: '{ingredients}'). Skipping DB save.")
+        return f"⚠️ レシピ名または食材情報の抽出に失敗したため、保存をスキップしました。\n🔗 {url}"
+
+    # 正常に取得できた場合のみ Supabase へ保存
     save_recipe_to_db(title, url, ingredients)
-    return f"【レシピを保存しました！】\n📖 {title}\n🔗 {url}"
+    
+    return f"【レシピを保存しました！】\n📖 {title}\n🛒 食材: {ingredients}\n🔗 {url}"
 
 def process_search_recipes(user_query: str) -> str:
     favorites = get_all_recipes_from_db()
