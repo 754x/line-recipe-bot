@@ -1,5 +1,8 @@
 import os
 import re
+import json
+import urllib.request
+from bs4 import BeautifulSoup
 from fastapi import FastAPI, Request, HTTPException
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -41,7 +44,7 @@ def get_all_recipes_from_db():
     res = supabase.table("favorite_recipes").select("*").execute()
     return res.data or []
 
-# 処理ロジック
+# 処理ロジック (Colabで成功したロジック)
 def process_add_recipe(url: str) -> str:
     raw_content = ""
     
@@ -91,7 +94,6 @@ def process_add_recipe(url: str) -> str:
 【Webページ内容】
 {raw_content[:4000]}
 """
-
     title = ""
     ingredients = ""
 
@@ -116,7 +118,7 @@ def process_add_recipe(url: str) -> str:
     except Exception as e:
         print(f"[ERROR] OpenAI / JSON Parsing Failed: {e}")
 
-    # --- Step 4: バリデーション（取得失敗時は DB 保存しない） ---
+    # --- Step 4: バリデーション（取得・抽出失敗時は DB 保存しない） ---
     if not title or title in ["不明なレシピ", "取得失敗レシピ", "解析エラーレシピ"] or not ingredients:
         print(f"[WARN] Incomplete recipe data (title: '{title}', ingredients: '{ingredients}'). Skipping DB save.")
         return f"⚠️ レシピ名または食材情報の抽出に失敗したため、保存をスキップしました。\n🔗 {url}"
