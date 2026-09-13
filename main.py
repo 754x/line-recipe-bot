@@ -139,36 +139,52 @@ def process_add_recipe(url: str) -> str:
 def process_search_recipes(user_query: str) -> str:
     favorites = get_all_recipes_from_db()
     
-    # DBのお気に入り情報（タイトル、食材、URL）
-    fav_text = "\n".join([f"- {r.get('title', '')} (食材: {r.get('ingredients', '')}) URL: {r.get('url', '')}" for r in favorites])
+    # DBのお気に入り情報（タイトル、味付け・食材、URL）
+    fav_text = "\n".join([
+        f"- タイトル: {r.get('title', '')} | 味付け・食材: {r.get('ingredients', '')} | URL: {r.get('url', '')}" 
+        for r in favorites
+    ])
     
-    # Tavily Web検索結果
+    # Tavily Web検索（ユーザーの入力条件で検索）
     search_res = tavily_client.search(query=f"{user_query} レシピ", max_results=3)
     results_list = search_res.get('results', [])
-    results_text = "\n".join([f"・タイトル: {r.get('title', '')}\n  URL: {r.get('url', '')}\n  概要: {r.get('content', '')[:100]}" for r in results_list])
+    results_text = "\n".join([
+        f"・タイトル: {r.get('title', '')}\n  URL: {r.get('url', '')}\n  概要: {r.get('content', '')[:100]}" 
+        for r in results_list
+    ])
     
-    prompt = f"""ユーザーの希望に合うレシピを提案してください。
+    prompt = f"""ユーザーの入力条件「{user_query}」に対して、「過去のお気に入り」と「Web検索結果」の双方から最適なレシピを提案してください。
 
-【ユーザーの条件】
+【ユーザーの検索条件】
 {user_query}
 
-【お気に入り傾向】
+【登録済みお気に入りレシピ】
 {fav_text if fav_text else "まだ登録なし"}
 
-【Web検索結果】
+【最新のWeb検索結果】
 {results_text}
 
-【出力条件】
-・ユーザーの条件とお気に入り傾向を踏まえて、おすすめのレシピを2〜3個提案してください。
-・各レシピの提案には、必ず「タイトル」と「URL」を含めてください。
-・URLがない提案は絶対にしないでください。検索結果に含まれる正確なURLをそのまま出力してください。
+【出力・提案ルール】
+1. 以下の2つのセクションに分けて提案を作成してください。
+   ・「📁 お気に入りからの提案」: 【登録済みお気に入りレシピ】の中から条件に合うもの（該当がなければ省略可）。
+   ・「🌐 新しいWebレシピ」: 【最新のWeb検索結果】の中から条件に合うもの。
+2. 過去のお気に入りレシピの「味付け・分量」の傾向を考慮し、ユーザーが好みそうなポイントを添えてください。
+3. **【最重要】提案するすべてのレシピに、絶対に正確な URL を記載してください。** URLのない提案は厳禁です。LINEでタップしやすいよう、URLは独立した行に出力してください。
 
 【出力フォーマット例】
-おすすめのレシピをご紹介します！
+「{user_query}」のおすすめレシピです！
 
-1. 料理名
-URL: https://...
-ポイント: 簡単で美味しく作れます。
+📁 **お気に入りから**
+・料理名
+ポイント: いつもの甘辛い味付けです。
+URL:
+https://...
+
+🌐 **新しいWebレシピ**
+・料理名
+ポイント: 時短で作れるアイデアレシピです。
+URL:
+https://...
 """
 
     response = openai_client.chat.completions.create(
