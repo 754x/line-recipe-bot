@@ -4,3 +4,5 @@ line-bot-sdk
 openai
 tavily-python
 supabase
+httpx
+beautifulsoup4
