@@ -130,12 +130,39 @@ def process_add_recipe(url: str) -> str:
 
 def process_search_recipes(user_query: str) -> str:
     favorites = get_all_recipes_from_db()
-    fav_text = "\n".join([f"- {r['title']}: {r['ingredients']}" for r in favorites])
     
+    # DBのお気に入り情報（タイトル、食材、URL）
+    fav_text = "\n".join([f"- {r.get('title', '')} (食材: {r.get('ingredients', '')}) URL: {r.get('url', '')}" for r in favorites])
+    
+    # Tavily Web検索結果
     search_res = tavily_client.search(query=f"{user_query} レシピ", max_results=3)
-    results_text = "\n".join([f"・{r['title']}\n  URL: {r['url']}" for r in search_res.get('results', [])])
+    results_list = search_res.get('results', [])
+    results_text = "\n".join([f"・タイトル: {r.get('title', '')}\n  URL: {r.get('url', '')}\n  概要: {r.get('content', '')[:100]}" for r in results_list])
     
-    prompt = f"お気に入り傾向:\n{fav_text}\n\n検索結果:\n{results_text}\n\nユーザー指定条件: {user_query}\n\n上記を元にお気に入りの傾向を踏まえたおすすめレシピを簡潔に提案してください。"
+    prompt = f"""ユーザーの希望に合うレシピを提案してください。
+
+【ユーザーの条件】
+{user_query}
+
+【お気に入り傾向】
+{fav_text if fav_text else "まだ登録なし"}
+
+【Web検索結果】
+{results_text}
+
+【出力条件】
+・ユーザーの条件とお気に入り傾向を踏まえて、おすすめのレシピを2〜3個提案してください。
+・各レシピの提案には、必ず「タイトル」と「URL」を含めてください。
+・URLがない提案は絶対にしないでください。検索結果に含まれる正確なURLをそのまま出力してください。
+
+【出力フォーマット例】
+おすすめのレシピをご紹介します！
+
+1. 料理名
+URL: https://...
+ポイント: 簡単で美味しく作れます。
+"""
+
     response = openai_client.chat.completions.create(
         model="gpt-5-nano",
         messages=[{"role": "user", "content": prompt}]
