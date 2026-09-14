@@ -3,7 +3,7 @@ import re
 import json
 import urllib.request
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -11,6 +11,7 @@ from linebot.v3.messaging import (
     ApiClient,
     MessagingApi,
     ReplyMessageRequest,
+    PushMessageRequest,  # ★ Push送信のために追加
     TextMessage
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
@@ -44,7 +45,7 @@ def get_all_recipes_from_db():
     res = supabase.table("favorite_recipes").select("*").execute()
     return res.data or []
 
-# 処理ロジック (Colabで成功したロジック)
+# 処理ロジック (変更なし)
 def process_add_recipe(url: str) -> str:
     raw_content = ""
     
@@ -76,7 +77,6 @@ def process_add_recipe(url: str) -> str:
         except Exception as e:
             print(f"[DEBUG] Fallback HTTP Error: {e}")
 
-    # 本文が全く取得できなかった場合は保存せずに中断
     if not raw_content or len(raw_content.strip()) < 20:
         print(f"[WARN] Failed to fetch content from URL: {url}. Skipping DB save.")
         return f"⚠️ ページの本文を取得できなかったため、保存をスキップしました。\n🔗 {url}"
@@ -126,12 +126,11 @@ def process_add_recipe(url: str) -> str:
     except Exception as e:
         print(f"[ERROR] OpenAI / JSON Parsing Failed: {e}")
 
-    # --- Step 4: バリデーション（取得・抽出失敗時は DB 保存しない） ---
+    # --- Step 4: バリデーション ---
     if not title or title in ["不明なレシピ", "取得失敗レシピ", "解析エラーレシピ"] or not ingredients:
         print(f"[WARN] Incomplete recipe data (title: '{title}', ingredients: '{ingredients}'). Skipping DB save.")
         return f"⚠️ レシピ名または食材情報の抽出に失敗したため、保存をスキップしました。\n🔗 {url}"
 
-    # 正常に取得できた場合のみ Supabase へ保存
     save_recipe_to_db(title, url, ingredients)
     
     return f"【レシピを保存しました！】\n📖 {title}\n🛒 食材: {ingredients}\n🔗 {url}"
@@ -139,13 +138,11 @@ def process_add_recipe(url: str) -> str:
 def process_search_recipes(user_query: str) -> str:
     favorites = get_all_recipes_from_db()
     
-    # DBのお気に入り情報（タイトル、味付け・食材、URL）
     fav_text = "\n".join([
         f"- タイトル: {r.get('title', '')} | 味付け・食材: {r.get('ingredients', '')} | URL: {r.get('url', '')}" 
         for r in favorites
     ])
     
-    # Tavily Web検索（ユーザーの入力条件で検索）
     search_res = tavily_client.search(query=f"{user_query} レシピ", max_results=3)
     results_list = search_res.get('results', [])
     results_text = "\n".join([
@@ -193,40 +190,74 @@ https://...
     )
     return response.choices[0].message.content
 
-@app.get("/")
-def root():
-    return {"status": "ok"}
 
-@app.post("/callback")
-async def callback(request: Request):
-    signature = request.headers.get("X-Line-Signature", "")
-    body = (await request.body()).decode("utf-8")
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        raise HTTPException(status_code=400, detail="Invalid signature")
-    return "OK"
-
-@handler.add(MessageEvent, message=TextMessageContent)
-def handle_message(event):
-    user_text = event.message.text.strip()
+# ★ 重い AI/DB 検索処理をバックグラウンドで実行して Push メッセージを送る新関数
+def process_message_async(user_text: str, target_id: str):
     urls = re.findall(r'https?://[^\s]+', user_text)
 
     try:
         if urls:
             reply_text = process_add_recipe(urls[0])
-        elif user_text in ["使い方", "ヘルプ", "help"]:
+        elif user_text.lower() in ["使い方", "ヘルプ", "help"]:
             reply_text = "【使い方】\n・レシピのURLを送るとDBに保存します。\n・食材名や「時短レシピ」などの条件を送るとAIが提案します。"
         else:
             reply_text = process_search_recipes(user_text)
 
+        # 完成した結果を Push メッセージ（to=target_id）で直接送信
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.push_message(
+                PushMessageRequest(
+                    to=target_id,
+                    messages=[TextMessage(text=reply_text)]
+                )
+            )
+    except Exception as e:
+        print(f"[ERROR] Async process failed: {e}")
+
+
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
+
+# ★ バックグラウンドタスク（BackgroundTasks）を受け取る形式に変更
+@app.post("/callback")
+async def callback(request: Request, background_tasks: BackgroundTasks):
+    signature = request.headers.get("X-Line-Signature", "")
+    body = (await request.body()).decode("utf-8")
+    
+    try:
+        events = handler.parser.parse(body, signature)
+        for event in events:
+            if isinstance(event, MessageEvent) and isinstance(event.message, TextMessageContent):
+                # イベントをハンドラーへ引き渡す際に background_tasks も受け渡す
+                handle_message(event, background_tasks)
+    except InvalidSignatureError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    return "OK"
+
+
+# ★ メッセージ受け取り時に即座に「一次返信」を行い、バックグラウンドにタスク追加
+def handle_message(event: MessageEvent, background_tasks: BackgroundTasks):
+    user_text = event.message.text.strip()
+    
+    # 個人チャット(user)でもグループLINE(group/room)でも送信できるように対象IDを取得
+    target_id = event.source.user_id if event.source.type == "user" else getattr(event.source, f"{event.source.type}_id", event.source.user_id)
+
+    # 1. まず「受け取りました」のメッセージを即座に ReplyToken で返信 (0.1秒)
+    quick_ack_text = "リクエストを受け取りました！レシピを準備中ですので少々お待ちください... 🔍"
+    try:
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text=reply_text)]
+                    messages=[TextMessage(text=quick_ack_text)]
                 )
             )
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"[ERROR] Failed to send quick reply: {e}")
+
+    # 2. 時間のかかる本処理をバックグラウンドへ追加（非同期実行）
+    background_tasks.add_task(process_message_async, user_text, target_id)
