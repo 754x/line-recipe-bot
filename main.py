@@ -136,21 +136,32 @@ def process_add_recipe(url: str) -> str:
     return f"【レシピを保存しました！】\n📖 {title}\n🛒 食材: {ingredients}\n🔗 {url}"
 
 def process_search_recipes(user_query: str) -> str:
+    print(f"[DEBUG search] Start searching for query: '{user_query}'")
+    
     try:
+        # Step 1: DBからお気に入り取得
+        print(f"[DEBUG search] Step 1: Fetching favorites from DB...")
         favorites = get_all_recipes_from_db()
+        print(f"[DEBUG search] Step 1 done. Found {len(favorites) if favorites else 0} favorites.")
         
         fav_text = "\n".join([
             f"- タイトル: {r.get('title', '')} | 味付け・食材: {r.get('ingredients', '')} | URL: {r.get('url', '')}" 
             for r in favorites
         ])
         
+        # Step 2: Tavily でWeb検索（※ここで固まっている可能性大）
+        print(f"[DEBUG search] Step 2: Calling Tavily search API...")
         search_res = tavily_client.search(query=f"{user_query} レシピ", max_results=3)
         results_list = search_res.get('results', [])
+        print(f"[DEBUG search] Step 2 done. Got {len(results_list)} results from Tavily.")
+        
         results_text = "\n".join([
             f"・タイトル: {r.get('title', '')}\n  URL: {r.get('url', '')}\n  概要: {r.get('content', '')[:100]}" 
             for r in results_list
         ])
         
+        # Step 3: OpenAI で文章生成
+        print(f"[DEBUG search] Step 3: Calling OpenAI API...")
         prompt = f"""ユーザーの入力条件「{user_query}」に対して、「過去のお気に入り」と「Web検索結果」の双方から最適なレシピを提案してください。
 
 【ユーザーの検索条件】
@@ -168,28 +179,20 @@ def process_search_recipes(user_query: str) -> str:
    ・「🌐 新しいWebレシピ」: 【最新のWeb検索結果】の中から条件に合うもの。
 2. 過去のお気に入りレシピの「味付け・分量」の傾向を考慮し、ユーザーが好みそうなポイントを添えてください。
 3. **【最重要】提案するすべてのレシピに、絶対に正確な URL を記載してください。** URLのない提案は厳禁です。LINEでタップしやすいよう、URLは独立した行に出力してください。
-
-【出力フォーマット例】
-「{user_query}」のおすすめレシピです！
-
-📁 **お気に入りから**
-・料理名
-ポイント: いつもの甘辛い味付けです。
-URL:
-https://...
-
-🌐 **新しいWebレシピ**
-・料理名
-ポイント: 時短で作れるアイデアレシピです。
-URL:
-https://...
 """
 
         response = openai_client.chat.completions.create(
             model="gpt-5-nano",
             messages=[{"role": "user", "content": prompt}]
         )
+        print(f"[DEBUG search] Step 3 done. AI response generated successfully.")
         return response.choices[0].message.content
+
+    except Exception as e:
+        print(f"[ERROR search] Failed at some step: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"⚠️ 検索処理中にエラーが発生しました（詳細: {e}）"
 
     except Exception as e:
         print(f"[ERROR] process_search_recipes failed: {e}")
