@@ -217,8 +217,13 @@ def process_message_async(user_text: str, target_id: str):
 
 
 @app.get("/")
+@app.head("/")  # 405エラー防止
 def root():
-    return {"status": "ok"}
+    try:
+        supabase.table("favorite_recipes").select("id").limit(1).execute()
+        return {"status": "ok", "db": "connected"}
+    except Exception as e:
+        return {"status": "ok", "db_error": str(e)}
 
 
 # ★ バックグラウンドタスク（BackgroundTasks）を受け取る形式に変更
