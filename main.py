@@ -136,21 +136,22 @@ def process_add_recipe(url: str) -> str:
     return f"【レシピを保存しました！】\n📖 {title}\n🛒 食材: {ingredients}\n🔗 {url}"
 
 def process_search_recipes(user_query: str) -> str:
-    favorites = get_all_recipes_from_db()
-    
-    fav_text = "\n".join([
-        f"- タイトル: {r.get('title', '')} | 味付け・食材: {r.get('ingredients', '')} | URL: {r.get('url', '')}" 
-        for r in favorites
-    ])
-    
-    search_res = tavily_client.search(query=f"{user_query} レシピ", max_results=3)
-    results_list = search_res.get('results', [])
-    results_text = "\n".join([
-        f"・タイトル: {r.get('title', '')}\n  URL: {r.get('url', '')}\n  概要: {r.get('content', '')[:100]}" 
-        for r in results_list
-    ])
-    
-    prompt = f"""ユーザーの入力条件「{user_query}」に対して、「過去のお気に入り」と「Web検索結果」の双方から最適なレシピを提案してください。
+    try:
+        favorites = get_all_recipes_from_db()
+        
+        fav_text = "\n".join([
+            f"- タイトル: {r.get('title', '')} | 味付け・食材: {r.get('ingredients', '')} | URL: {r.get('url', '')}" 
+            for r in favorites
+        ])
+        
+        search_res = tavily_client.search(query=f"{user_query} レシピ", max_results=3)
+        results_list = search_res.get('results', [])
+        results_text = "\n".join([
+            f"・タイトル: {r.get('title', '')}\n  URL: {r.get('url', '')}\n  概要: {r.get('content', '')[:100]}" 
+            for r in results_list
+        ])
+        
+        prompt = f"""ユーザーの入力条件「{user_query}」に対して、「過去のお気に入り」と「Web検索結果」の双方から最適なレシピを提案してください。
 
 【ユーザーの検索条件】
 {user_query}
@@ -184,11 +185,16 @@ URL:
 https://...
 """
 
-    response = openai_client.chat.completions.create(
-        model="gpt-5-nano",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response.choices[0].message.content
+        response = openai_client.chat.completions.create(
+            model="gpt-5-nano",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content
+
+    except Exception as e:
+        print(f"[ERROR] process_search_recipes failed: {e}")
+        # 万が一タイムアウトやエラーが起きても、LINEにメッセージを返すためのフォールバック
+        return f"⚠️ 検索・提案の生成中にタイムアウトまたはエラーが発生しました。時間を置いて再度お試しください。"
 
 
 # ★ 重い AI/DB 検索処理をバックグラウンドで実行して Push メッセージを送る新関数
